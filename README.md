@@ -1,8 +1,8 @@
-# IMM Trajectory Solver
+# Interacting Multi-Model Trajectory Solver
 
 Backend Kotlin/JVM library for 3D trajectory prediction with probabilistic multi-model filtering.
 
-This project contains only predictor logic:
+This project contains:
 
 - linear algebra primitives;
 - domain types for measurements, estimates, and predictions;
