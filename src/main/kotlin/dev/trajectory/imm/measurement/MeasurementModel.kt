@@ -30,7 +30,7 @@ interface UnscentedMeasurementModel : MeasurementModel
 
 class CartesianPositionMeasurementModel(
     private val noiseCovariance: CovarianceMatrix,
-) : LinearMeasurementModel {
+) : LinearMeasurementModel, EkfMeasurementModel {
     init {
         require(noiseCovariance.value.rows == MEASUREMENT_DIMENSION) {
             "Cartesian measurement covariance must be ${MEASUREMENT_DIMENSION}x$MEASUREMENT_DIMENSION."
@@ -62,6 +62,13 @@ class CartesianPositionMeasurementModel(
                 listOf(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             ),
         )
+    }
+
+    override fun jacobian(state: StateVector): Matrix {
+        require(state.value.rows == CanonicalKinematicState.DIMENSION) {
+            "Cartesian measurement model expects canonical ${CanonicalKinematicState.DIMENSION}D state."
+        }
+        return measurementMatrix()
     }
 
     companion object {

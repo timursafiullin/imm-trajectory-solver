@@ -21,6 +21,39 @@ interface MotionModel {
     }
 }
 
+interface NonlinearMotionModel {
+    val name: String
+    val stateDimension: Int
+
+    fun propagate(mean: Matrix, deltaTime: Double): Matrix
+
+    fun jacobian(mean: Matrix, deltaTime: Double): Matrix
+
+    fun processNoise(deltaTime: Double): Matrix
+}
+
+class LinearizedMotionModel(
+    private val delegate: MotionModel,
+) : NonlinearMotionModel {
+    override val name: String = delegate.name
+    override val stateDimension: Int = delegate.stateDimension
+
+    override fun propagate(mean: Matrix, deltaTime: Double): Matrix {
+        return delegate.propagate(mean, deltaTime)
+    }
+
+    override fun jacobian(mean: Matrix, deltaTime: Double): Matrix {
+        require(mean.rows == stateDimension && mean.columns == 1) {
+            "Motion model $name expected ${stateDimension}x1 state, got ${mean.rows}x${mean.columns}."
+        }
+        return delegate.transitionMatrix(deltaTime)
+    }
+
+    override fun processNoise(deltaTime: Double): Matrix {
+        return delegate.processNoise(deltaTime)
+    }
+}
+
 class ConstantVelocityModel9D(
     private val accelerationDamping: Double = 0.0,
     private val accelerationSpectralDensity: Double = 1.0,

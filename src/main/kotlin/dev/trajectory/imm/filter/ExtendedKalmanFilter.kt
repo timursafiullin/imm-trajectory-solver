@@ -6,41 +6,23 @@ import dev.trajectory.imm.domain.MeasurementVector
 import dev.trajectory.imm.domain.StateEstimate
 import dev.trajectory.imm.domain.StateVector
 import dev.trajectory.imm.domain.TimedMeasurement
-import dev.trajectory.imm.measurement.LinearMeasurementModel
-import dev.trajectory.imm.motion.MotionModel
+import dev.trajectory.imm.measurement.EkfMeasurementModel
+import dev.trajectory.imm.motion.NonlinearMotionModel
 import dev.trajectory.imm.state.CanonicalKinematicState
 
-data class LinearKalmanInitializationConfig(
-    val initialPositionVariance: Double = 100.0,
-    val initialVelocityVariance: Double = 100.0,
-    val initialAccelerationVariance: Double = 400.0,
-) {
-    init {
-        require(initialPositionVariance > 0.0 && initialPositionVariance.isFinite()) {
-            "Initial position variance must be finite and positive."
-        }
-        require(initialVelocityVariance > 0.0 && initialVelocityVariance.isFinite()) {
-            "Initial velocity variance must be finite and positive."
-        }
-        require(initialAccelerationVariance > 0.0 && initialAccelerationVariance.isFinite()) {
-            "Initial acceleration variance must be finite and positive."
-        }
-    }
-}
-
-class LinearKalmanFilter(
+class ExtendedKalmanFilter(
     override val name: String,
-    private val motionModel: MotionModel,
-    private val measurementModel: LinearMeasurementModel,
+    private val motionModel: NonlinearMotionModel,
+    private val measurementModel: EkfMeasurementModel,
     private val initializationConfig: LinearKalmanInitializationConfig = LinearKalmanInitializationConfig(),
 ) : TrackingFilter {
     init {
         require(name.isNotBlank()) { "Filter name must not be blank." }
         require(motionModel.stateDimension == CanonicalKinematicState.DIMENSION) {
-            "MVP linear Kalman filters must expose canonical ${CanonicalKinematicState.DIMENSION}D state."
+            "Extended Kalman filter must expose canonical ${CanonicalKinematicState.DIMENSION}D state."
         }
         require(measurementModel.measurementDimension == 3) {
-            "MVP linear Kalman filter expects 3D Cartesian measurements."
+            "Extended Kalman filter expects 3D Cartesian measurements in the current backend version."
         }
     }
 
@@ -58,16 +40,19 @@ class LinearKalmanFilter(
         }
         requireCanonicalEstimate(name, state.estimate)
         val deltaTime = toTime - state.estimate.time
-        val transition = motionModel.transitionMatrix(deltaTime)
-        val predictedMean = transition * state.estimate.mean.value
-        val predictedCovariance = (transition * state.estimate.covariance.value * transition.transpose() + motionModel.processNoise(deltaTime)).symmetrized()
+        val transitionJacobian = motionModel.jacobian(state.estimate.mean.value, deltaTime)
+        val predictedMean = motionModel.propagate(state.estimate.mean.value, deltaTime)
+        val predictedCovariance = (
+            transitionJacobian * state.estimate.covariance.value * transitionJacobian.transpose() +
+                motionModel.processNoise(deltaTime)
+            ).symmetrized()
         val predictedEstimate = StateEstimate(
             time = toTime,
             mean = StateVector(predictedMean),
             covariance = CovarianceMatrix(predictedCovariance),
         )
         val predictedMeasurement = expectedMeasurement(predictedEstimate)
-        val h = measurementModel.measurementMatrix()
+        val h = measurementModel.jacobian(predictedEstimate.mean)
         val measurementCovariance = (h * predictedCovariance * h.transpose() + measurementModel.measurementNoise().value).symmetrized()
         return FilterPrediction(
             previousState = state,
@@ -86,21 +71,19 @@ class LinearKalmanFilter(
         require(measurement.time == prediction.predictedEstimate.time) {
             "Correction measurement time ${measurement.time} must match prediction time ${prediction.predictedEstimate.time}."
         }
-        val z = measurementVector(measurement)
-        val h = measurementModel.measurementMatrix()
+        val predictedState = prediction.predictedEstimate.mean
+        val predictedMeasurement = measurementModel.predictMeasurement(predictedState, measurement.time)
+        val h = measurementModel.jacobian(predictedState)
         val r = measurementModel.measurementNoise().value
-        val xPredicted = prediction.predictedEstimate.mean.value
-        val pPredicted = prediction.predictedEstimate.covariance.value
-        val innovation = z - h * xPredicted
-        val s = (h * pPredicted * h.transpose() + r).symmetrized()
+        val innovation = measurementVector(measurement) - predictedMeasurement.mean.value
+        val s = (h * prediction.predictedEstimate.covariance.value * h.transpose() + r).symmetrized()
         val stats = gaussianInnovationStats(measurementDimension, innovation, s)
         val accepted = stats.mahalanobisDistanceSquared <= gatingThreshold
-
         val updatedEstimate = if (accepted) {
             josephUpdatedEstimate(
                 time = measurement.time,
-                predictedMean = xPredicted,
-                predictedCovariance = pPredicted,
+                predictedMean = prediction.predictedEstimate.mean.value,
+                predictedCovariance = prediction.predictedEstimate.covariance.value,
                 measurementMatrix = h,
                 measurementNoise = r,
                 innovation = innovation,
@@ -109,7 +92,6 @@ class LinearKalmanFilter(
         } else {
             prediction.predictedEstimate
         }
-
         return FilterUpdate(
             prediction = prediction,
             updatedEstimate = updatedEstimate,
@@ -124,6 +106,9 @@ class LinearKalmanFilter(
 
     override fun expectedMeasurement(estimate: StateEstimate): MeasurementEstimate {
         requireCanonicalEstimate(name, estimate)
-        return expectedLinearMeasurement(measurementModel, estimate)
+        val predicted = measurementModel.predictMeasurement(estimate.mean, estimate.time)
+        val h = measurementModel.jacobian(estimate.mean)
+        val covariance = (h * estimate.covariance.value * h.transpose() + measurementModel.measurementNoise().value).symmetrized()
+        return predicted.copy(covariance = CovarianceMatrix(covariance))
     }
 }

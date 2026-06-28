@@ -10,37 +10,21 @@ import dev.trajectory.imm.measurement.LinearMeasurementModel
 import dev.trajectory.imm.motion.MotionModel
 import dev.trajectory.imm.state.CanonicalKinematicState
 
-data class LinearKalmanInitializationConfig(
-    val initialPositionVariance: Double = 100.0,
-    val initialVelocityVariance: Double = 100.0,
-    val initialAccelerationVariance: Double = 400.0,
-) {
-    init {
-        require(initialPositionVariance > 0.0 && initialPositionVariance.isFinite()) {
-            "Initial position variance must be finite and positive."
-        }
-        require(initialVelocityVariance > 0.0 && initialVelocityVariance.isFinite()) {
-            "Initial velocity variance must be finite and positive."
-        }
-        require(initialAccelerationVariance > 0.0 && initialAccelerationVariance.isFinite()) {
-            "Initial acceleration variance must be finite and positive."
-        }
-    }
-}
-
-class LinearKalmanFilter(
+class FadingMemoryKalmanFilter(
     override val name: String,
     private val motionModel: MotionModel,
     private val measurementModel: LinearMeasurementModel,
+    private val fadingFactor: Double = 1.05,
     private val initializationConfig: LinearKalmanInitializationConfig = LinearKalmanInitializationConfig(),
 ) : TrackingFilter {
     init {
         require(name.isNotBlank()) { "Filter name must not be blank." }
+        require(fadingFactor.isFinite() && fadingFactor >= 1.0) { "Fading factor must be finite and at least 1.0." }
         require(motionModel.stateDimension == CanonicalKinematicState.DIMENSION) {
-            "MVP linear Kalman filters must expose canonical ${CanonicalKinematicState.DIMENSION}D state."
+            "Fading-memory Kalman filter must expose canonical ${CanonicalKinematicState.DIMENSION}D state."
         }
         require(measurementModel.measurementDimension == 3) {
-            "MVP linear Kalman filter expects 3D Cartesian measurements."
+            "Fading-memory Kalman filter expects 3D Cartesian measurements."
         }
     }
 
@@ -60,15 +44,16 @@ class LinearKalmanFilter(
         val deltaTime = toTime - state.estimate.time
         val transition = motionModel.transitionMatrix(deltaTime)
         val predictedMean = transition * state.estimate.mean.value
-        val predictedCovariance = (transition * state.estimate.covariance.value * transition.transpose() + motionModel.processNoise(deltaTime)).symmetrized()
+        val propagatedCovariance = transition * state.estimate.covariance.value * transition.transpose()
+        val predictedCovariance = (propagatedCovariance * fadingFactor + motionModel.processNoise(deltaTime)).symmetrized()
         val predictedEstimate = StateEstimate(
             time = toTime,
             mean = StateVector(predictedMean),
             covariance = CovarianceMatrix(predictedCovariance),
         )
-        val predictedMeasurement = expectedMeasurement(predictedEstimate)
         val h = measurementModel.measurementMatrix()
         val measurementCovariance = (h * predictedCovariance * h.transpose() + measurementModel.measurementNoise().value).symmetrized()
+        val predictedMeasurement = expectedMeasurement(predictedEstimate)
         return FilterPrediction(
             previousState = state,
             predictedEstimate = predictedEstimate,
@@ -86,21 +71,17 @@ class LinearKalmanFilter(
         require(measurement.time == prediction.predictedEstimate.time) {
             "Correction measurement time ${measurement.time} must match prediction time ${prediction.predictedEstimate.time}."
         }
-        val z = measurementVector(measurement)
         val h = measurementModel.measurementMatrix()
         val r = measurementModel.measurementNoise().value
-        val xPredicted = prediction.predictedEstimate.mean.value
-        val pPredicted = prediction.predictedEstimate.covariance.value
-        val innovation = z - h * xPredicted
-        val s = (h * pPredicted * h.transpose() + r).symmetrized()
+        val innovation = measurementVector(measurement) - h * prediction.predictedEstimate.mean.value
+        val s = (h * prediction.predictedEstimate.covariance.value * h.transpose() + r).symmetrized()
         val stats = gaussianInnovationStats(measurementDimension, innovation, s)
         val accepted = stats.mahalanobisDistanceSquared <= gatingThreshold
-
         val updatedEstimate = if (accepted) {
             josephUpdatedEstimate(
                 time = measurement.time,
-                predictedMean = xPredicted,
-                predictedCovariance = pPredicted,
+                predictedMean = prediction.predictedEstimate.mean.value,
+                predictedCovariance = prediction.predictedEstimate.covariance.value,
                 measurementMatrix = h,
                 measurementNoise = r,
                 innovation = innovation,
@@ -109,7 +90,6 @@ class LinearKalmanFilter(
         } else {
             prediction.predictedEstimate
         }
-
         return FilterUpdate(
             prediction = prediction,
             updatedEstimate = updatedEstimate,

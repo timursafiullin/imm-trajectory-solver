@@ -10,37 +10,38 @@ import dev.trajectory.imm.measurement.LinearMeasurementModel
 import dev.trajectory.imm.motion.MotionModel
 import dev.trajectory.imm.state.CanonicalKinematicState
 
-data class LinearKalmanInitializationConfig(
-    val initialPositionVariance: Double = 100.0,
-    val initialVelocityVariance: Double = 100.0,
-    val initialAccelerationVariance: Double = 400.0,
+data class InnovationAdaptiveKalmanConfig(
+    val targetMahalanobisDistanceSquared: Double = 3.0,
+    val adaptationRate: Double = 0.65,
+    val maxMeasurementNoiseScale: Double = 50.0,
 ) {
     init {
-        require(initialPositionVariance > 0.0 && initialPositionVariance.isFinite()) {
-            "Initial position variance must be finite and positive."
+        require(targetMahalanobisDistanceSquared.isFinite() && targetMahalanobisDistanceSquared > 0.0) {
+            "Target Mahalanobis distance must be finite and positive."
         }
-        require(initialVelocityVariance > 0.0 && initialVelocityVariance.isFinite()) {
-            "Initial velocity variance must be finite and positive."
+        require(adaptationRate.isFinite() && adaptationRate in 0.0..1.0) {
+            "Adaptation rate must be finite and in [0, 1]."
         }
-        require(initialAccelerationVariance > 0.0 && initialAccelerationVariance.isFinite()) {
-            "Initial acceleration variance must be finite and positive."
+        require(maxMeasurementNoiseScale.isFinite() && maxMeasurementNoiseScale >= 1.0) {
+            "Maximum measurement noise scale must be finite and at least 1.0."
         }
     }
 }
 
-class LinearKalmanFilter(
+class InnovationAdaptiveKalmanFilter(
     override val name: String,
     private val motionModel: MotionModel,
     private val measurementModel: LinearMeasurementModel,
+    private val adaptiveConfig: InnovationAdaptiveKalmanConfig = InnovationAdaptiveKalmanConfig(),
     private val initializationConfig: LinearKalmanInitializationConfig = LinearKalmanInitializationConfig(),
 ) : TrackingFilter {
     init {
         require(name.isNotBlank()) { "Filter name must not be blank." }
         require(motionModel.stateDimension == CanonicalKinematicState.DIMENSION) {
-            "MVP linear Kalman filters must expose canonical ${CanonicalKinematicState.DIMENSION}D state."
+            "Adaptive Kalman filter must expose canonical ${CanonicalKinematicState.DIMENSION}D state."
         }
         require(measurementModel.measurementDimension == 3) {
-            "MVP linear Kalman filter expects 3D Cartesian measurements."
+            "Adaptive Kalman filter expects 3D Cartesian measurements."
         }
     }
 
@@ -66,9 +67,9 @@ class LinearKalmanFilter(
             mean = StateVector(predictedMean),
             covariance = CovarianceMatrix(predictedCovariance),
         )
-        val predictedMeasurement = expectedMeasurement(predictedEstimate)
         val h = measurementModel.measurementMatrix()
         val measurementCovariance = (h * predictedCovariance * h.transpose() + measurementModel.measurementNoise().value).symmetrized()
+        val predictedMeasurement = expectedMeasurement(predictedEstimate)
         return FilterPrediction(
             previousState = state,
             predictedEstimate = predictedEstimate,
@@ -86,37 +87,43 @@ class LinearKalmanFilter(
         require(measurement.time == prediction.predictedEstimate.time) {
             "Correction measurement time ${measurement.time} must match prediction time ${prediction.predictedEstimate.time}."
         }
-        val z = measurementVector(measurement)
         val h = measurementModel.measurementMatrix()
-        val r = measurementModel.measurementNoise().value
-        val xPredicted = prediction.predictedEstimate.mean.value
-        val pPredicted = prediction.predictedEstimate.covariance.value
-        val innovation = z - h * xPredicted
-        val s = (h * pPredicted * h.transpose() + r).symmetrized()
-        val stats = gaussianInnovationStats(measurementDimension, innovation, s)
-        val accepted = stats.mahalanobisDistanceSquared <= gatingThreshold
-
+        val baseMeasurementNoise = measurementModel.measurementNoise().value
+        val predictedMean = prediction.predictedEstimate.mean.value
+        val predictedCovariance = prediction.predictedEstimate.covariance.value
+        val innovation = measurementVector(measurement) - h * predictedMean
+        val baseInnovationCovariance = (h * predictedCovariance * h.transpose() + baseMeasurementNoise).symmetrized()
+        val baseStats = gaussianInnovationStats(measurementDimension, innovation, baseInnovationCovariance)
+        val ratio = baseStats.mahalanobisDistanceSquared / adaptiveConfig.targetMahalanobisDistanceSquared
+        val measurementNoiseScale = if (ratio <= 1.0) {
+            1.0
+        } else {
+            (1.0 + adaptiveConfig.adaptationRate * (ratio - 1.0)).coerceIn(1.0, adaptiveConfig.maxMeasurementNoiseScale)
+        }
+        val adaptedMeasurementNoise = baseMeasurementNoise * measurementNoiseScale
+        val adaptedInnovationCovariance = (h * predictedCovariance * h.transpose() + adaptedMeasurementNoise).symmetrized()
+        val adaptedStats = gaussianInnovationStats(measurementDimension, innovation, adaptedInnovationCovariance)
+        val accepted = adaptedStats.mahalanobisDistanceSquared <= gatingThreshold
         val updatedEstimate = if (accepted) {
             josephUpdatedEstimate(
                 time = measurement.time,
-                predictedMean = xPredicted,
-                predictedCovariance = pPredicted,
+                predictedMean = predictedMean,
+                predictedCovariance = predictedCovariance,
                 measurementMatrix = h,
-                measurementNoise = r,
+                measurementNoise = adaptedMeasurementNoise,
                 innovation = innovation,
                 stateDimension = stateDimension,
             )
         } else {
             prediction.predictedEstimate
         }
-
         return FilterUpdate(
             prediction = prediction,
             updatedEstimate = updatedEstimate,
             innovation = MeasurementVector(innovation),
-            innovationCovariance = CovarianceMatrix(s),
-            logLikelihood = stats.logLikelihood,
-            mahalanobisDistanceSquared = stats.mahalanobisDistanceSquared,
+            innovationCovariance = CovarianceMatrix(adaptedInnovationCovariance),
+            logLikelihood = adaptedStats.logLikelihood,
+            mahalanobisDistanceSquared = adaptedStats.mahalanobisDistanceSquared,
             gatingThreshold = gatingThreshold,
             accepted = accepted,
         )
