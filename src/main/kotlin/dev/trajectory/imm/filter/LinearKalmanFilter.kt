@@ -1,11 +1,11 @@
 package dev.trajectory.imm.filter
 
 import dev.trajectory.imm.domain.CovarianceMatrix
+import dev.trajectory.imm.domain.CartesianTimedMeasurement
 import dev.trajectory.imm.domain.MeasurementEstimate
 import dev.trajectory.imm.domain.MeasurementVector
 import dev.trajectory.imm.domain.StateEstimate
 import dev.trajectory.imm.domain.StateVector
-import dev.trajectory.imm.domain.TimedMeasurement
 import dev.trajectory.imm.measurement.LinearMeasurementModel
 import dev.trajectory.imm.motion.MotionModel
 import dev.trajectory.imm.state.CanonicalKinematicState
@@ -47,7 +47,7 @@ class LinearKalmanFilter(
     override val stateDimension: Int = motionModel.stateDimension
     override val measurementDimension: Int = measurementModel.measurementDimension
 
-    override fun initialize(measurements: List<TimedMeasurement>): FilterState {
+    override fun initialize(measurements: List<CartesianTimedMeasurement>): FilterState {
         return initializeCanonicalKinematicState(name, measurements, initializationConfig)
     }
 
@@ -79,7 +79,7 @@ class LinearKalmanFilter(
 
     override fun correct(
         prediction: FilterPrediction,
-        measurement: TimedMeasurement,
+        measurement: CartesianTimedMeasurement,
         gatingThreshold: Double,
     ): FilterUpdate {
         require(gatingThreshold.isFinite() && gatingThreshold > 0.0) { "Gating threshold must be finite and positive." }
@@ -88,7 +88,7 @@ class LinearKalmanFilter(
         }
         val z = measurementVector(measurement)
         val h = measurementModel.measurementMatrix()
-        val r = measurementModel.measurementNoise().value
+        val r = measurementModel.measurementNoise(measurement).value
         val xPredicted = prediction.predictedEstimate.mean.value
         val pPredicted = prediction.predictedEstimate.covariance.value
         val innovation = z - h * xPredicted

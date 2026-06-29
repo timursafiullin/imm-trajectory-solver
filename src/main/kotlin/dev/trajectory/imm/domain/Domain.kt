@@ -41,10 +41,43 @@ data class Vector3(
     }
 }
 
-data class TimedMeasurement(
-    val time: Double,
-    val position: Vector3,
+data class Wgs84Position(
+    val latitudeDegrees: Double,
+    val longitudeDegrees: Double,
+    val heightMeters: Double,
 ) {
+    init {
+        require(latitudeDegrees.isFinite()) { "WGS84 latitude must be finite." }
+        require(longitudeDegrees.isFinite()) { "WGS84 longitude must be finite." }
+        require(heightMeters.isFinite()) { "WGS84 height must be finite." }
+        require(latitudeDegrees in -90.0..90.0) {
+            "WGS84 latitude must be in [-90, 90] degrees, got $latitudeDegrees."
+        }
+        require(longitudeDegrees in -180.0..180.0) {
+            "WGS84 longitude must be in [-180, 180] degrees, got $longitudeDegrees."
+        }
+    }
+}
+
+sealed interface TimedMeasurement<out P> {
+    val time: Double
+    val position: P
+}
+
+data class CartesianTimedMeasurement(
+    override val time: Double,
+    override val position: Vector3,
+    val measurementNoiseOverride: CovarianceMatrix? = null,
+) : TimedMeasurement<Vector3> {
+    init {
+        require(time.isFinite()) { "Measurement time must be finite." }
+    }
+}
+
+data class Wgs84TimedMeasurement(
+    override val time: Double,
+    override val position: Wgs84Position,
+) : TimedMeasurement<Wgs84Position> {
     init {
         require(time.isFinite()) { "Measurement time must be finite." }
     }
@@ -76,10 +109,47 @@ data class StateEstimate(
     }
 }
 
-data class Prediction(
+sealed interface PositionCovariance
+
+data class CartesianPositionCovariance(
+    val covariance: CovarianceMatrix,
+) : PositionCovariance
+
+data class Wgs84PositionCovariance(
+    val enuCovariance: CovarianceMatrix,
+    val geodeticCovariance: CovarianceMatrix,
+) : PositionCovariance
+
+sealed interface PositionMeasurementNoise
+
+data class EnuPositionNoise(
+    val covariance: CovarianceMatrix,
+) : PositionMeasurementNoise {
+    companion object {
+        fun isotropic(variance: Double): EnuPositionNoise {
+            require(variance.isFinite() && variance > 0.0) {
+                "ENU measurement variance must be finite and positive."
+            }
+            return EnuPositionNoise(
+                CovarianceMatrix(Matrix.diagonal(listOf(variance, variance, variance))),
+            )
+        }
+    }
+}
+
+data class Wgs84PositionNoise(
+    val covariance: CovarianceMatrix,
+) : PositionMeasurementNoise {
+    init {
+        require(covariance.value.rows == 3) { "WGS84 position noise covariance must be 3x3." }
+    }
+}
+
+data class TrajectoryPrediction<P>(
     val time: Double,
-    val expectedMeasurement: MeasurementEstimate,
-    val stateEstimate: StateEstimate,
+    val expectedPosition: P,
+    val covariance: PositionCovariance,
+    val internalStateEstimate: StateEstimate,
     val modelProbabilities: Map<String, Double>,
     val metadata: Map<String, Double> = emptyMap(),
 ) {
@@ -91,10 +161,11 @@ data class Prediction(
     }
 }
 
-data class UpdateResult(
+data class TrajectoryUpdate<P>(
     val time: Double,
-    val prediction: Prediction,
-    val updatedEstimate: StateEstimate,
+    val prediction: TrajectoryPrediction<P>,
+    val correctedPosition: P,
+    val internalUpdatedEstimate: StateEstimate,
     val accepted: Boolean,
     val logLikelihood: Double,
     val mahalanobisDistanceSquared: Double,

@@ -2,22 +2,36 @@
 
 `imm-trajectory-solver` is a Kotlin/JVM backend library for 3D trajectory prediction with probabilistic multi-model filtering.
 
-The library estimates the hidden kinematic state of one moving object from time-stamped Cartesian position measurements and predicts future positions using an Interacting Multiple Model (IMM) filter. It owns only numerical filtering, motion models, measurement models, validation, and backend prediction contracts.
+The public API supports two coordinate solvers:
 
-Benchmark scenarios, synthetic trajectories, metrics, reports, CSV/JSON output, and visualization belong to the separate `trajectory-simulator` project.
+- Cartesian solver: accepts Cartesian measurements and returns Cartesian predictions.
+- WGS84 solver: accepts WGS84 geodetic measurements and returns WGS84 geodetic predictions.
+
+Internally both solvers use the same metric IMM/Kalman core in canonical 9D state space. Coordinate conversion is isolated at the solver boundary:
+
+```text
+public coordinate input
+-> CoordinateFrameAdapter
+-> metric IMM core in canonical 9D meters
+-> CoordinateFrameAdapter
+-> public coordinate output
+```
+
+`trajectory-simulator` remains a separate project for benchmarks, scenarios, reports, and visualization. The backend library does not depend on simulator code.
 
 ## Project Scope
 
 This project provides:
 
 - local matrix and vector math primitives;
-- domain types for measurements, state estimates, predictions, and update diagnostics;
+- typed domain objects for Cartesian and WGS84 measurements;
+- typed trajectory prediction and update contracts;
 - canonical 9D kinematic state representation;
-- Cartesian position measurement model;
+- coordinate frame adapters for Cartesian and WGS84;
 - linear and extended Kalman-family filter implementations;
 - constant-velocity, constant-acceleration, and Singer/Gauss-Markov acceleration motion models;
 - IMM state mixing, model probability updates, and combined prediction output;
-- validation for dimensions, probabilities, covariance matrices, time ordering, and gating.
+- validation for dimensions, probabilities, covariance matrices, time ordering, frame compatibility, and gating.
 
 This project does not provide:
 
@@ -36,22 +50,22 @@ imm-trajectory-solver/
 ├── settings.gradle.kts
 └── src/
     ├── main/kotlin/dev/trajectory/imm/
-    │   ├── domain/       # public measurement, estimate, prediction, and update types
+    │   ├── coordinate/   # solver frames, WGS84 geodesy, coordinate adapters
+    │   ├── domain/       # public measurements, predictions, updates, covariance types
     │   ├── filter/       # TrackingFilter, KF/EKF variants, update diagnostics
     │   ├── math/         # Matrix implementation and linear algebra helpers
-    │   ├── measurement/  # Cartesian measurement model and measurement abstractions
+    │   ├── measurement/  # internal metric observation models
     │   ├── motion/       # CV, CA, Singer, linear/nonlinear model contracts
-    │   ├── solver/       # TrajectoryPredictionBackend and ImmTrajectorySolver
+    │   ├── solver/       # typed solver facades and metric IMM core
     │   ├── state/        # canonical 9D state index definitions
     │   └── validation/   # numerical validators and probability utilities
     └── test/kotlin/dev/trajectory/imm/
+        ├── coordinate/
         ├── filter/
         ├── math/
         ├── solver/
         └── validation/
 ```
-
-`imm-trajectory-solver` is currently a single Gradle Kotlin/JVM library project. It is intentionally independent from `trajectory-simulator`.
 
 ## Requirements
 
@@ -108,26 +122,26 @@ The canonical state is required because IMM mixing is only valid when all member
 
 ## Public Backend API
 
-The main backend contract is:
+The public backend contract is typed by measurement and output position:
 
 ```kotlin
-interface TrajectoryPredictionBackend {
-    fun initialize(measurements: List<TimedMeasurement>): SolverState
+interface TrajectoryPredictionBackend<M : TimedMeasurement<P>, P> {
+    fun initialize(measurements: List<M>): SolverState
 
     fun predictNext(
         state: SolverState,
         toTime: Double,
-    ): Prediction
+    ): TrajectoryPrediction<P>
 
     fun update(
         state: SolverState,
-        measurement: TimedMeasurement,
-    ): SolverStep
+        measurement: M,
+    ): SolverStep<P>
 
     fun predictHorizon(
         state: SolverState,
         futureTimes: List<Double>,
-    ): List<Prediction>
+    ): List<TrajectoryPrediction<P>>
 
     fun reset(): SolverState
 }
@@ -138,15 +152,29 @@ The solver uses explicit state passing:
 - `initialize` creates a complete `SolverState`.
 - `predictNext` does not mutate the solver state.
 - `predictHorizon` uses temporary states and does not commit online state.
-- `update` returns a `SolverStep` containing the previous state, next state, and diagnostics.
+- `update` returns a `SolverStep<P>` containing the previous state, next state, and typed update diagnostics.
 - callers advance online tracking by keeping `step.nextState`.
 
-## Default IMM Solver
+`SolverState` stores the active `SolverFrame`. Every `predictNext`, `predictHorizon`, and `update` call validates that the state belongs to the solver frame. This prevents accidental reuse of a Cartesian state in a WGS84 solver, or a WGS84 state from another origin.
 
-The easiest entry point is:
+## Solver Factory
+
+Use `ImmTrajectorySolver.cartesian` for Cartesian coordinates:
 
 ```kotlin
-val solver = ImmTrajectorySolver.defaultCartesian()
+val solver = ImmTrajectorySolver.cartesian()
+```
+
+Use `ImmTrajectorySolver.wgs84` for WGS84 coordinates. WGS84 requires an explicit origin at construction:
+
+```kotlin
+val origin = Wgs84Position(
+    latitudeDegrees = 56.8389000,
+    longitudeDegrees = 60.6057000,
+    heightMeters = 250.0,
+)
+
+val solver = ImmTrajectorySolver.wgs84(origin = origin)
 ```
 
 The default solver contains three canonical 9D linear Kalman filters:
@@ -170,22 +198,26 @@ Default initial model probabilities are equal:
 CV = 1/3, CA = 1/3, Singer = 1/3
 ```
 
-## Usage Example
+## Cartesian Usage Example
 
 ```kotlin
-import dev.trajectory.imm.domain.TimedMeasurement
+import dev.trajectory.imm.domain.CartesianPositionCovariance
+import dev.trajectory.imm.domain.CartesianTimedMeasurement
 import dev.trajectory.imm.domain.Vector3
+import dev.trajectory.imm.solver.ImmSolverConfig
 import dev.trajectory.imm.solver.ImmTrajectorySolver
 
 fun main() {
-    val solver = ImmTrajectorySolver.defaultCartesian(
-        measurementVariance = 25.0,
+    val solver = ImmTrajectorySolver.cartesian(
+        config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(
+            variance = 25.0,
+        ),
     )
 
     val history = listOf(
-        TimedMeasurement(time = 0.0, position = Vector3(0.0, 0.0, 1000.0)),
-        TimedMeasurement(time = 1.0, position = Vector3(10.0, 1.0, 1002.0)),
-        TimedMeasurement(time = 2.0, position = Vector3(20.0, 3.0, 1004.0)),
+        CartesianTimedMeasurement(time = 0.0, position = Vector3(0.0, 0.0, 1000.0)),
+        CartesianTimedMeasurement(time = 1.0, position = Vector3(10.0, 1.0, 1002.0)),
+        CartesianTimedMeasurement(time = 2.0, position = Vector3(20.0, 3.0, 1004.0)),
     )
 
     var state = solver.initialize(history)
@@ -195,7 +227,7 @@ fun main() {
         toTime = 3.0,
     )
 
-    val nextMeasurement = TimedMeasurement(
+    val nextMeasurement = CartesianTimedMeasurement(
         time = 3.0,
         position = Vector3(31.0, 6.0, 1007.0),
     )
@@ -207,11 +239,166 @@ fun main() {
 
     state = step.nextState
 
-    println(prediction.expectedMeasurement.mean.value)
+    val covariance = prediction.covariance as CartesianPositionCovariance
+    println(prediction.expectedPosition)
+    println(covariance.covariance.value)
+    println(step.update.correctedPosition)
     println(step.update.modelProbabilities)
     println(state.time)
 }
 ```
+
+## WGS84 Usage Example
+
+The WGS84 solver accepts and returns WGS84 positions. Internally it tracks in a local ENU tangent frame in meters relative to the explicit origin.
+
+```kotlin
+import dev.trajectory.imm.domain.TrajectoryPrediction
+import dev.trajectory.imm.domain.Wgs84Position
+import dev.trajectory.imm.domain.Wgs84PositionCovariance
+import dev.trajectory.imm.domain.Wgs84TimedMeasurement
+import dev.trajectory.imm.solver.ImmSolverConfig
+import dev.trajectory.imm.solver.ImmTrajectorySolver
+
+fun main() {
+    val origin = Wgs84Position(
+        latitudeDegrees = 56.8389000,
+        longitudeDegrees = 60.6057000,
+        heightMeters = 250.0,
+    )
+
+    val solver = ImmTrajectorySolver.wgs84(
+        origin = origin,
+        config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(
+            variance = 25.0,
+        ),
+    )
+
+    val history = listOf(
+        Wgs84TimedMeasurement(
+            time = 0.0,
+            position = Wgs84Position(
+                latitudeDegrees = 56.8389000,
+                longitudeDegrees = 60.6057000,
+                heightMeters = 250.0,
+            ),
+        ),
+        Wgs84TimedMeasurement(
+            time = 1.0,
+            position = Wgs84Position(
+                latitudeDegrees = 56.8389090,
+                longitudeDegrees = 60.6057210,
+                heightMeters = 254.0,
+            ),
+        ),
+        Wgs84TimedMeasurement(
+            time = 2.0,
+            position = Wgs84Position(
+                latitudeDegrees = 56.8389180,
+                longitudeDegrees = 60.6057430,
+                heightMeters = 258.5,
+            ),
+        ),
+    )
+
+    var state = solver.initialize(history)
+
+    val prediction: TrajectoryPrediction<Wgs84Position> = solver.predictNext(
+        state = state,
+        toTime = 3.0,
+    )
+
+    val nextMeasurement = Wgs84TimedMeasurement(
+        time = 3.0,
+        position = Wgs84Position(
+            latitudeDegrees = 56.8389270,
+            longitudeDegrees = 60.6057650,
+            heightMeters = 263.0,
+        ),
+    )
+
+    val step = solver.update(
+        state = state,
+        measurement = nextMeasurement,
+    )
+
+    state = step.nextState
+
+    val covariance = prediction.covariance as Wgs84PositionCovariance
+    println(prediction.expectedPosition)
+    println(covariance.enuCovariance.value)
+    println(covariance.geodeticCovariance.value)
+    println(step.update.correctedPosition)
+    println(step.update.modelProbabilities)
+    println(state.frame.id)
+}
+```
+
+## Coordinate Frames
+
+`CartesianImmTrajectorySolver` is a thin facade over the metric core. Its public coordinates and internal coordinates are the same metric Cartesian `Vector3`.
+
+`Wgs84ImmTrajectorySolver` owns a `Wgs84CoordinateFrameAdapter`. The adapter performs:
+
+- WGS84 geodetic to ECEF conversion;
+- ECEF to local ENU conversion;
+- local ENU to ECEF conversion;
+- ECEF to WGS84 geodetic conversion;
+- longitude normalization to `[-180, 180]`;
+- measurement radius validation against the frame origin;
+- covariance projection between ENU meters and `[latitudeDegrees, longitudeDegrees, heightMeters]^T`.
+
+The WGS84 solver rejects:
+
+- origins with `abs(latitudeDegrees) > 89.0`;
+- predicted or measured positions near the poles;
+- measurements outside `validRadiusMeters`;
+- solver states from another frame.
+
+## Measurement Noise and Covariance
+
+Measurement noise is explicit:
+
+```kotlin
+sealed interface PositionMeasurementNoise
+
+data class EnuPositionNoise(
+    val covariance: CovarianceMatrix,
+) : PositionMeasurementNoise
+
+data class Wgs84PositionNoise(
+    val covariance: CovarianceMatrix,
+) : PositionMeasurementNoise
+```
+
+For Cartesian solvers, use `EnuPositionNoise`. The covariance is interpreted as metric Cartesian position covariance in meters squared.
+
+For WGS84 solvers:
+
+- `EnuPositionNoise` is passed directly to the metric core as local ENU covariance in meters squared.
+- `Wgs84PositionNoise` is projected to local ENU at each measurement point.
+- output covariance is `Wgs84PositionCovariance`.
+
+`Wgs84PositionCovariance` contains:
+
+- `enuCovariance`: internal metric local ENU covariance in meters squared;
+- `geodeticCovariance`: covariance for `[latitudeDegrees, longitudeDegrees, heightMeters]^T`.
+
+Geodetic covariance projection uses central finite differences with a 0.1 meter step in local ENU axes.
+
+## WGS84 Assumptions
+
+Current WGS84 support is intentionally local:
+
+- datum: WGS84;
+- height reference: ellipsoid height;
+- tracking frame: local ENU tangent frame;
+- origin: explicit `Wgs84Position` passed to `ImmTrajectorySolver.wgs84`;
+- default valid radius: `100_000.0` meters;
+- no automatic re-anchoring;
+- no ECEF-native long-range IMM state in this refactor.
+
+For long-range tracks, polar regions, or global paths crossing the validity radius, add a dedicated frame strategy before using the metric IMM core over large distances.
 
 ## Available Motion Models
 
@@ -248,7 +435,7 @@ fun main() {
 `ExtendedKalmanFilter`
 
 - Uses a nonlinear motion model and an EKF measurement model.
-- Current implementation is constrained to canonical 9D state and 3D Cartesian measurements.
+- Current implementation is constrained to canonical 9D state and 3D Cartesian metric measurements.
 - Useful as the extension path for future nonlinear dynamics and radar-like measurement models.
 
 `FadingMemoryKalmanFilter`
@@ -261,21 +448,23 @@ fun main() {
 - Linear Kalman variant that adapts measurement noise from innovation magnitude.
 - Useful for robustness against occasional measurement mismatch or changed measurement quality.
 
-## Measurement Model
+## Measurement Models
 
-The implemented measurement model is:
+Measurement models are internal observation models in metric state space.
+
+Cartesian position observation uses:
 
 ```text
 z = [x, y, z]^T
 ```
 
-`CartesianPositionMeasurementModel` observes position from the canonical 9D state with a 3x9 measurement matrix. The helper constructor:
+`CartesianPositionMeasurementModel` observes position from the canonical 9D state with a 3x9 measurement matrix:
 
 ```kotlin
 CartesianPositionMeasurementModel.isotropic(variance = 25.0)
 ```
 
-creates isotropic Cartesian measurement noise.
+There is no WGS84 measurement model in the Kalman layer. WGS84 conversion is handled only by `Wgs84CoordinateFrameAdapter`, before measurements enter the metric IMM core and after predictions leave it.
 
 Future radar or spherical measurements require nonlinear observation logic and EKF/UKF/CKF support. They should not be forced into the current linear Cartesian measurement contract.
 
@@ -290,6 +479,7 @@ The backend validates:
 - transition matrix rows normalized to one;
 - finite, positive gating threshold;
 - strictly increasing initialization and update times;
+- compatible solver frame for every stateful operation;
 - normalized model probabilities;
 - covariance symmetry and positive semi-definiteness within tolerance;
 - measurement and state vector dimensions.
@@ -313,13 +503,14 @@ trajectory-simulator may depend on imm-trajectory-solver.
 imm-trajectory-solver must not depend on trajectory-simulator.
 ```
 
-The simulator wraps this backend through its adapter module and converts simulator-side measurements, predictions, updates, and metadata to backend types. This library should not import simulator packages or implement simulator-specific reporting, visualization, or benchmark concerns.
+The simulator wraps the Cartesian typed backend through its adapter module and converts simulator-side measurements, predictions, updates, and metadata to backend types. WGS84 benchmark scenarios can be added later on the simulator side without changing the backend architecture.
 
 ## Development Notes
 
 - Keep public contracts explicit: interfaces, data classes, value classes, and immutable values.
 - Keep IMM mixing in canonical 9D state space unless a future adapter defines mathematically valid conversion.
 - Do not mix state estimates with different native dimensions directly.
+- Keep coordinate conversion at solver boundaries, not inside Kalman measurement models.
 - Keep `predictNext` and `predictHorizon` non-mutating.
 - Treat out-of-sequence measurements as unsupported in the default update path.
 - Add new benchmark logic to `trajectory-simulator`, not to this library.

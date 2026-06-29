@@ -1,11 +1,11 @@
 package dev.trajectory.imm.filter
 
 import dev.trajectory.imm.domain.CovarianceMatrix
+import dev.trajectory.imm.domain.CartesianTimedMeasurement
 import dev.trajectory.imm.domain.MeasurementEstimate
 import dev.trajectory.imm.domain.MeasurementVector
 import dev.trajectory.imm.domain.StateEstimate
 import dev.trajectory.imm.domain.StateVector
-import dev.trajectory.imm.domain.TimedMeasurement
 import dev.trajectory.imm.measurement.EkfMeasurementModel
 import dev.trajectory.imm.motion.NonlinearMotionModel
 import dev.trajectory.imm.state.CanonicalKinematicState
@@ -29,7 +29,7 @@ class ExtendedKalmanFilter(
     override val stateDimension: Int = motionModel.stateDimension
     override val measurementDimension: Int = measurementModel.measurementDimension
 
-    override fun initialize(measurements: List<TimedMeasurement>): FilterState {
+    override fun initialize(measurements: List<CartesianTimedMeasurement>): FilterState {
         return initializeCanonicalKinematicState(name, measurements, initializationConfig)
     }
 
@@ -64,7 +64,7 @@ class ExtendedKalmanFilter(
 
     override fun correct(
         prediction: FilterPrediction,
-        measurement: TimedMeasurement,
+        measurement: CartesianTimedMeasurement,
         gatingThreshold: Double,
     ): FilterUpdate {
         require(gatingThreshold.isFinite() && gatingThreshold > 0.0) { "Gating threshold must be finite and positive." }
@@ -74,7 +74,7 @@ class ExtendedKalmanFilter(
         val predictedState = prediction.predictedEstimate.mean
         val predictedMeasurement = measurementModel.predictMeasurement(predictedState, measurement.time)
         val h = measurementModel.jacobian(predictedState)
-        val r = measurementModel.measurementNoise().value
+        val r = measurementModel.measurementNoise(measurement).value
         val innovation = measurementVector(measurement) - predictedMeasurement.mean.value
         val s = (h * prediction.predictedEstimate.covariance.value * h.transpose() + r).symmetrized()
         val stats = gaussianInnovationStats(measurementDimension, innovation, s)

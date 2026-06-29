@@ -1,24 +1,30 @@
 package dev.trajectory.imm.solver
 
-import dev.trajectory.imm.domain.TimedMeasurement
+import dev.trajectory.imm.coordinate.Wgs84FrameConfig
+import dev.trajectory.imm.coordinate.Wgs84Geodesy
+import dev.trajectory.imm.coordinate.Wgs84SolverFrame
+import dev.trajectory.imm.domain.CartesianTimedMeasurement
+import dev.trajectory.imm.domain.CovarianceMatrix
+import dev.trajectory.imm.domain.EnuPositionNoise
 import dev.trajectory.imm.domain.Vector3
+import dev.trajectory.imm.domain.Wgs84Position
+import dev.trajectory.imm.domain.Wgs84PositionCovariance
+import dev.trajectory.imm.domain.Wgs84PositionNoise
+import dev.trajectory.imm.domain.Wgs84TimedMeasurement
+import dev.trajectory.imm.math.Matrix
 import dev.trajectory.imm.state.CanonicalKinematicState
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class ImmTrajectorySolverTest {
     @Test
-    fun `default solver initializes canonical 9D filters and normalized probabilities`() {
-        val solver = ImmTrajectorySolver.defaultCartesian(measurementVariance = 1.0)
-        val state = solver.initialize(
-            listOf(
-                TimedMeasurement(0.0, Vector3(0.0, 0.0, 0.0)),
-                TimedMeasurement(1.0, Vector3(1.0, 0.0, 0.0)),
-                TimedMeasurement(2.0, Vector3(2.0, 0.0, 0.0)),
-            ),
-        )
+    fun `cartesian solver initializes canonical 9D filters and normalized probabilities`() {
+        val solver = ImmTrajectorySolver.cartesian(ImmSolverConfig.withIsotropicEnuMeasurementVariance(1.0))
+        val state = solver.initialize(cartesianHistory())
 
         assertEquals(3, state.filterStates.size)
         state.filterStates.values.forEach { filterState ->
@@ -29,15 +35,9 @@ class ImmTrajectorySolverTest {
     }
 
     @Test
-    fun `predict next and horizon do not mutate online state`() {
-        val solver = ImmTrajectorySolver.defaultCartesian(measurementVariance = 1.0)
-        val state = solver.initialize(
-            listOf(
-                TimedMeasurement(0.0, Vector3(0.0, 0.0, 0.0)),
-                TimedMeasurement(1.0, Vector3(1.0, 1.0, 0.0)),
-                TimedMeasurement(2.0, Vector3(2.0, 2.0, 0.0)),
-            ),
-        )
+    fun `cartesian predict next and horizon do not mutate online state`() {
+        val solver = ImmTrajectorySolver.cartesian(ImmSolverConfig.withIsotropicEnuMeasurementVariance(1.0))
+        val state = solver.initialize(cartesianHistory())
         val before = state.copy()
 
         solver.predictNext(state, 3.0)
@@ -47,17 +47,11 @@ class ImmTrajectorySolverTest {
     }
 
     @Test
-    fun `updates keep probabilities normalized and return observable gating diagnostics`() {
-        val solver = ImmTrajectorySolver.defaultCartesian(measurementVariance = 1.0)
-        var state = solver.initialize(
-            listOf(
-                TimedMeasurement(0.0, Vector3(0.0, 0.0, 0.0)),
-                TimedMeasurement(1.0, Vector3(1.0, 0.0, 0.0)),
-                TimedMeasurement(2.0, Vector3(2.0, 0.0, 0.0)),
-            ),
-        )
+    fun `cartesian updates keep probabilities normalized and return diagnostics`() {
+        val solver = ImmTrajectorySolver.cartesian(ImmSolverConfig.withIsotropicEnuMeasurementVariance(1.0))
+        var state = solver.initialize(cartesianHistory())
 
-        val step = solver.update(state, TimedMeasurement(3.0, Vector3(3.0, 0.0, 0.0)))
+        val step = solver.update(state, CartesianTimedMeasurement(3.0, Vector3(3.0, 0.0, 0.0)))
         state = step.nextState
 
         assertTrue(step.update.accepted)
@@ -68,23 +62,25 @@ class ImmTrajectorySolverTest {
 
     @Test
     fun `accelerated segment shifts probability away from pure CV`() {
-        val solver = ImmTrajectorySolver.defaultCartesian(
-            measurementVariance = 0.25,
-            cvAccelerationSpectralDensity = 0.05,
-            caJerkSpectralDensity = 0.5,
-            singerAccelerationNoiseIntensity = 1.0,
-            gatingThreshold = 1.0e6,
+        val solver = ImmTrajectorySolver.cartesian(
+            ImmSolverConfig.withIsotropicEnuMeasurementVariance(
+                variance = 0.25,
+                cvAccelerationSpectralDensity = 0.05,
+                caJerkSpectralDensity = 0.5,
+                singerAccelerationNoiseIntensity = 1.0,
+                gatingThreshold = 1.0e6,
+            ),
         )
         var state = solver.initialize(
             listOf(
-                TimedMeasurement(0.0, acceleratedPoint(0.0)),
-                TimedMeasurement(1.0, acceleratedPoint(1.0)),
-                TimedMeasurement(2.0, acceleratedPoint(2.0)),
+                CartesianTimedMeasurement(0.0, acceleratedPoint(0.0)),
+                CartesianTimedMeasurement(1.0, acceleratedPoint(1.0)),
+                CartesianTimedMeasurement(2.0, acceleratedPoint(2.0)),
             ),
         )
 
         for (time in 3..12) {
-            val step = solver.update(state, TimedMeasurement(time.toDouble(), acceleratedPoint(time.toDouble())))
+            val step = solver.update(state, CartesianTimedMeasurement(time.toDouble(), acceleratedPoint(time.toDouble())))
             state = step.nextState
         }
 
@@ -93,12 +89,216 @@ class ImmTrajectorySolverTest {
         assertTrue(accelerationAware > cv, "Expected CA+Singer probability $accelerationAware to exceed CV probability $cv.")
     }
 
+    @Test
+    fun `WGS84 solver initializes with explicit frame and returns WGS84 predictions`() {
+        val history = wgs84History()
+        val origin = history.first().position
+        val solver = ImmTrajectorySolver.wgs84(
+            origin = origin,
+            config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(1.0),
+        )
+
+        val state = solver.initialize(history)
+        val prediction = solver.predictNext(state, 3.0)
+
+        val frame = assertIs<Wgs84SolverFrame>(state.frame)
+        assertEquals(origin, frame.origin)
+        assertEquals(CanonicalKinematicState.DIMENSION, prediction.internalStateEstimate.mean.value.rows)
+        assertTrue(prediction.expectedPosition.latitudeDegrees.isFinite())
+        assertTrue(prediction.expectedPosition.longitudeDegrees.isFinite())
+        assertTrue(prediction.expectedPosition.heightMeters.isFinite())
+    }
+
+    @Test
+    fun `WGS84 solver matches equivalent local ENU run internally`() {
+        val wgs84History = wgs84History()
+        val wgs84Next = Wgs84TimedMeasurement(
+            time = 3.0,
+            position = Wgs84Position(
+                latitudeDegrees = 56.8389270,
+                longitudeDegrees = 60.6057650,
+                heightMeters = 263.0,
+            ),
+        )
+        val origin = wgs84History.first().position
+        val cartesianHistory = wgs84History.map { measurement -> measurement.toLocalCartesian(origin) }
+        val cartesianNext = wgs84Next.toLocalCartesian(origin)
+        val config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(
+            variance = 1.0,
+            gatingThreshold = 1.0e9,
+        )
+        val wgs84Solver = ImmTrajectorySolver.wgs84(origin = origin, config = config)
+        val cartesianSolver = ImmTrajectorySolver.cartesian(config)
+
+        val wgs84State = wgs84Solver.initialize(wgs84History)
+        val cartesianState = cartesianSolver.initialize(cartesianHistory)
+        val wgs84Prediction = wgs84Solver.predictNext(wgs84State, 3.0)
+        val cartesianPrediction = cartesianSolver.predictNext(cartesianState, 3.0)
+        val wgs84Step = wgs84Solver.update(wgs84State, wgs84Next)
+        val cartesianStep = cartesianSolver.update(cartesianState, cartesianNext)
+
+        assertMatrixClose(
+            expected = cartesianPrediction.internalStateEstimate.mean.value,
+            actual = wgs84Prediction.internalStateEstimate.mean.value,
+            tolerance = 1.0e-9,
+        )
+        assertMatrixClose(
+            expected = cartesianStep.update.internalUpdatedEstimate.mean.value,
+            actual = wgs84Step.update.internalUpdatedEstimate.mean.value,
+            tolerance = 1.0e-9,
+        )
+        cartesianStep.update.modelProbabilities.forEach { (name, probability) ->
+            assertEquals(probability, wgs84Step.update.modelProbabilities.getValue(name), 1.0e-12)
+        }
+    }
+
+    @Test
+    fun `WGS84 predict next and horizon do not mutate online state`() {
+        val history = wgs84History()
+        val solver = ImmTrajectorySolver.wgs84(
+            origin = history.first().position,
+            config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(1.0),
+        )
+        val state = solver.initialize(history)
+        val before = state.copy()
+
+        solver.predictNext(state, 3.0)
+        solver.predictHorizon(state, listOf(3.0, 4.0, 5.0))
+
+        assertEquals(before, state)
+    }
+
+    @Test
+    fun `solvers reject states from incompatible frames`() {
+        val history = wgs84History()
+        val wgs84Solver = ImmTrajectorySolver.wgs84(
+            origin = history.first().position,
+            config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(1.0),
+        )
+        val otherWgs84Solver = ImmTrajectorySolver.wgs84(
+            origin = history.first().position.copy(latitudeDegrees = history.first().position.latitudeDegrees + 0.01),
+            config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(1.0),
+        )
+        val cartesianSolver = ImmTrajectorySolver.cartesian(ImmSolverConfig.withIsotropicEnuMeasurementVariance(1.0))
+        val wgs84State = wgs84Solver.initialize(history)
+        val cartesianState = cartesianSolver.initialize(cartesianHistory())
+
+        assertFailsWith<IllegalArgumentException> {
+            otherWgs84Solver.predictNext(wgs84State, 3.0)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            wgs84Solver.predictNext(cartesianState, 3.0)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            cartesianSolver.predictNext(wgs84State, 3.0)
+        }
+    }
+
+    @Test
+    fun `WGS84 solver rejects measurements outside valid local radius`() {
+        val history = wgs84History()
+        val solver = ImmTrajectorySolver.wgs84(
+            origin = history.first().position,
+            config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(1.0),
+            frameConfig = Wgs84FrameConfig(
+                origin = history.first().position,
+                validRadiusMeters = 1.0,
+            ),
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            solver.initialize(history)
+        }
+    }
+
+    @Test
+    fun `WGS84 prediction exposes ENU and geodetic covariance`() {
+        val history = wgs84History()
+        val origin = history.first().position
+        val geodeticNoise = Wgs84PositionNoise(
+            covariance = CovarianceMatrix(Matrix.diagonal(listOf(1.0e-10, 1.0e-10, 1.0))),
+        )
+        val solver = ImmTrajectorySolver.wgs84(
+            origin = origin,
+            config = ImmSolverConfig(measurementNoise = geodeticNoise),
+        )
+
+        val state = solver.initialize(history)
+        val covariance = assertIs<Wgs84PositionCovariance>(solver.predictNext(state, 3.0).covariance)
+
+        assertEquals(3, covariance.enuCovariance.value.rows)
+        assertEquals(3, covariance.geodeticCovariance.value.rows)
+        assertTrue(covariance.enuCovariance.value.isPositiveSemiDefinite(1.0e-7))
+        assertTrue(covariance.geodeticCovariance.value.isPositiveSemiDefinite(1.0e-7))
+    }
+
+    private fun cartesianHistory(): List<CartesianTimedMeasurement> {
+        return listOf(
+            CartesianTimedMeasurement(0.0, Vector3(0.0, 0.0, 0.0)),
+            CartesianTimedMeasurement(1.0, Vector3(1.0, 0.0, 0.0)),
+            CartesianTimedMeasurement(2.0, Vector3(2.0, 0.0, 0.0)),
+        )
+    }
+
     private fun acceleratedPoint(time: Double): Vector3 {
         return Vector3(
             x = 0.5 * 3.0 * time * time,
             y = 2.0 * time,
             z = 100.0 + 0.25 * time * time,
         )
+    }
+
+    private fun wgs84History(): List<Wgs84TimedMeasurement> {
+        return listOf(
+            Wgs84TimedMeasurement(
+                time = 0.0,
+                position = Wgs84Position(
+                    latitudeDegrees = 56.8389000,
+                    longitudeDegrees = 60.6057000,
+                    heightMeters = 250.0,
+                ),
+            ),
+            Wgs84TimedMeasurement(
+                time = 1.0,
+                position = Wgs84Position(
+                    latitudeDegrees = 56.8389090,
+                    longitudeDegrees = 60.6057210,
+                    heightMeters = 254.0,
+                ),
+            ),
+            Wgs84TimedMeasurement(
+                time = 2.0,
+                position = Wgs84Position(
+                    latitudeDegrees = 56.8389180,
+                    longitudeDegrees = 60.6057430,
+                    heightMeters = 258.5,
+                ),
+            ),
+        )
+    }
+
+    private fun Wgs84TimedMeasurement.toLocalCartesian(origin: Wgs84Position): CartesianTimedMeasurement {
+        return CartesianTimedMeasurement(
+            time = time,
+            position = Wgs84Geodesy.geodeticToLocalEnu(
+                position = position,
+                origin = origin,
+            ),
+        )
+    }
+
+    private fun assertMatrixClose(
+        expected: Matrix,
+        actual: Matrix,
+        tolerance: Double,
+    ) {
+        assertEquals(expected.rows, actual.rows)
+        assertEquals(expected.columns, actual.columns)
+        for (row in 0 until expected.rows) {
+            for (column in 0 until expected.columns) {
+                assertEquals(expected[row, column], actual[row, column], tolerance)
+            }
+        }
     }
 
     private fun assertEquals(expected: Double, actual: Double, tolerance: Double) {

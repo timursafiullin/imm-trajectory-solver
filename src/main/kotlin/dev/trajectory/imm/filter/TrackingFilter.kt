@@ -1,10 +1,10 @@
 package dev.trajectory.imm.filter
 
 import dev.trajectory.imm.domain.CovarianceMatrix
+import dev.trajectory.imm.domain.CartesianTimedMeasurement
 import dev.trajectory.imm.domain.MeasurementEstimate
 import dev.trajectory.imm.domain.MeasurementVector
 import dev.trajectory.imm.domain.StateEstimate
-import dev.trajectory.imm.domain.TimedMeasurement
 
 data class FilterState(
     val estimate: StateEstimate,
@@ -15,7 +15,7 @@ interface TrackingFilter {
     val stateDimension: Int
     val measurementDimension: Int
 
-    fun initialize(measurements: List<TimedMeasurement>): FilterState
+    fun initialize(measurements: List<CartesianTimedMeasurement>): FilterState
 
     fun predict(
         state: FilterState,
@@ -24,7 +24,7 @@ interface TrackingFilter {
 
     fun correct(
         prediction: FilterPrediction,
-        measurement: TimedMeasurement,
+        measurement: CartesianTimedMeasurement,
         gatingThreshold: Double,
     ): FilterUpdate
 

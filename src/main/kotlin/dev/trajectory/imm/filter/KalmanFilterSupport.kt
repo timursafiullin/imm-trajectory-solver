@@ -1,11 +1,11 @@
 package dev.trajectory.imm.filter
 
 import dev.trajectory.imm.domain.CovarianceMatrix
+import dev.trajectory.imm.domain.CartesianTimedMeasurement
 import dev.trajectory.imm.domain.MeasurementEstimate
 import dev.trajectory.imm.domain.MeasurementVector
 import dev.trajectory.imm.domain.StateEstimate
 import dev.trajectory.imm.domain.StateVector
-import dev.trajectory.imm.domain.TimedMeasurement
 import dev.trajectory.imm.math.Matrix
 import dev.trajectory.imm.measurement.LinearMeasurementModel
 import dev.trajectory.imm.state.CanonicalKinematicState
@@ -18,7 +18,7 @@ internal data class KalmanInnovationStats(
 
 internal fun initializeCanonicalKinematicState(
     filterName: String,
-    measurements: List<TimedMeasurement>,
+    measurements: List<CartesianTimedMeasurement>,
     initializationConfig: LinearKalmanInitializationConfig,
 ): FilterState {
     require(measurements.isNotEmpty()) { "Filter $filterName initialization requires at least one measurement." }
@@ -90,7 +90,7 @@ internal fun requireCanonicalEstimate(
     }
 }
 
-internal fun measurementVector(measurement: TimedMeasurement): Matrix {
+internal fun measurementVector(measurement: CartesianTimedMeasurement): Matrix {
     return Matrix.columnVector(listOf(measurement.position.x, measurement.position.y, measurement.position.z))
 }
 

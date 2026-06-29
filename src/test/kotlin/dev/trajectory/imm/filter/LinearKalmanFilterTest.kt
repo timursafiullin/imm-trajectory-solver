@@ -1,6 +1,6 @@
 package dev.trajectory.imm.filter
 
-import dev.trajectory.imm.domain.TimedMeasurement
+import dev.trajectory.imm.domain.CartesianTimedMeasurement
 import dev.trajectory.imm.domain.Vector3
 import dev.trajectory.imm.measurement.CartesianPositionMeasurementModel
 import dev.trajectory.imm.motion.ConstantAccelerationModel9D
@@ -26,9 +26,9 @@ class LinearKalmanFilterTest {
         )
         var state = filter.initialize(
             listOf(
-                TimedMeasurement(0.0, Vector3(0.0, 0.0, 100.0)),
-                TimedMeasurement(1.0, Vector3(10.0, 2.0, 99.0)),
-                TimedMeasurement(2.0, Vector3(20.0, 4.0, 98.0)),
+                CartesianTimedMeasurement(0.0, Vector3(0.0, 0.0, 100.0)),
+                CartesianTimedMeasurement(1.0, Vector3(10.0, 2.0, 99.0)),
+                CartesianTimedMeasurement(2.0, Vector3(20.0, 4.0, 98.0)),
             ),
         )
 
@@ -37,7 +37,7 @@ class LinearKalmanFilterTest {
             val prediction = filter.predict(state, t)
             val update = filter.correct(
                 prediction = prediction,
-                measurement = TimedMeasurement(t, Vector3(10.0 * t, 2.0 * t, 100.0 - t)),
+                measurement = CartesianTimedMeasurement(t, Vector3(10.0 * t, 2.0 * t, 100.0 - t)),
                 gatingThreshold = 100.0,
             )
             state = FilterState(update.updatedEstimate)
@@ -59,13 +59,13 @@ class LinearKalmanFilterTest {
         )
         val state = filter.initialize(
             listOf(
-                TimedMeasurement(0.0, Vector3(0.0, 0.0, 0.0)),
-                TimedMeasurement(1.0, Vector3(1.0, 1.0, 1.0)),
-                TimedMeasurement(2.0, Vector3(2.0, 2.0, 2.0)),
+                CartesianTimedMeasurement(0.0, Vector3(0.0, 0.0, 0.0)),
+                CartesianTimedMeasurement(1.0, Vector3(1.0, 1.0, 1.0)),
+                CartesianTimedMeasurement(2.0, Vector3(2.0, 2.0, 2.0)),
             ),
         )
         val prediction = filter.predict(state, 3.0)
-        val update = filter.correct(prediction, TimedMeasurement(3.0, Vector3(3.1, 2.9, 3.0)), gatingThreshold = 100.0)
+        val update = filter.correct(prediction, CartesianTimedMeasurement(3.0, Vector3(3.1, 2.9, 3.0)), gatingThreshold = 100.0)
 
         assertTrue(update.updatedEstimate.covariance.value.isSymmetric(1.0e-10))
         assertTrue(update.updatedEstimate.covariance.value.isPositiveSemiDefinite(1.0e-8))
@@ -85,13 +85,13 @@ class LinearKalmanFilterTest {
         )
         val state = filter.initialize(
             listOf(
-                TimedMeasurement(0.0, Vector3(0.0, 0.0, 0.0)),
-                TimedMeasurement(1.0, Vector3(1.0, 0.0, 0.0)),
-                TimedMeasurement(2.0, Vector3(2.0, 0.0, 0.0)),
+                CartesianTimedMeasurement(0.0, Vector3(0.0, 0.0, 0.0)),
+                CartesianTimedMeasurement(1.0, Vector3(1.0, 0.0, 0.0)),
+                CartesianTimedMeasurement(2.0, Vector3(2.0, 0.0, 0.0)),
             ),
         )
         val prediction = filter.predict(state, 3.0)
-        val update = filter.correct(prediction, TimedMeasurement(3.0, Vector3(1000.0, 1000.0, 1000.0)), gatingThreshold = 7.814727903251179)
+        val update = filter.correct(prediction, CartesianTimedMeasurement(3.0, Vector3(1000.0, 1000.0, 1000.0)), gatingThreshold = 7.814727903251179)
 
         assertFalse(update.accepted)
         assertTrue(update.mahalanobisDistanceSquared > update.gatingThreshold)

@@ -1,6 +1,6 @@
 package dev.trajectory.imm.filter
 
-import dev.trajectory.imm.domain.TimedMeasurement
+import dev.trajectory.imm.domain.CartesianTimedMeasurement
 import dev.trajectory.imm.domain.Vector3
 import dev.trajectory.imm.measurement.CartesianPositionMeasurementModel
 import dev.trajectory.imm.motion.ConstantAccelerationModel9D
@@ -33,14 +33,14 @@ class AdditionalKalmanFiltersTest {
             initializationConfig = initializationConfig,
         )
         val history = listOf(
-            TimedMeasurement(0.0, Vector3(0.0, 0.0, 100.0)),
-            TimedMeasurement(1.0, Vector3(6.0, -1.0, 101.0)),
-            TimedMeasurement(2.0, Vector3(14.0, -2.0, 104.0)),
+            CartesianTimedMeasurement(0.0, Vector3(0.0, 0.0, 100.0)),
+            CartesianTimedMeasurement(1.0, Vector3(6.0, -1.0, 101.0)),
+            CartesianTimedMeasurement(2.0, Vector3(14.0, -2.0, 104.0)),
         )
 
         val linearPrediction = linear.predict(linear.initialize(history), 3.0)
         val ekfPrediction = ekf.predict(ekf.initialize(history), 3.0)
-        val measurement = TimedMeasurement(3.0, Vector3(24.0, -3.0, 109.0))
+        val measurement = CartesianTimedMeasurement(3.0, Vector3(24.0, -3.0, 109.0))
         val linearUpdate = linear.correct(linearPrediction, measurement, gatingThreshold = 1000.0)
         val ekfUpdate = ekf.correct(ekfPrediction, measurement, gatingThreshold = 1000.0)
 
@@ -121,7 +121,7 @@ class AdditionalKalmanFiltersTest {
             initializationConfig = initializationConfig,
         )
         val history = straightHistory()
-        val measurement = TimedMeasurement(3.0, Vector3(8.0, 0.0, 0.0))
+        val measurement = CartesianTimedMeasurement(3.0, Vector3(8.0, 0.0, 0.0))
 
         val linearUpdate = linear.correct(linear.predict(linear.initialize(history), 3.0), measurement, gatingThreshold = 1000.0)
         val adaptiveUpdate = adaptive.correct(adaptive.predict(adaptive.initialize(history), 3.0), measurement, gatingThreshold = 1000.0)
@@ -137,11 +137,11 @@ class AdditionalKalmanFiltersTest {
         assertTrue(adaptiveUpdate.updatedEstimate.covariance.value.isPositiveSemiDefinite(1.0e-8))
     }
 
-    private fun straightHistory(): List<TimedMeasurement> {
+    private fun straightHistory(): List<CartesianTimedMeasurement> {
         return listOf(
-            TimedMeasurement(0.0, Vector3(0.0, 0.0, 0.0)),
-            TimedMeasurement(1.0, Vector3(1.0, 0.0, 0.0)),
-            TimedMeasurement(2.0, Vector3(2.0, 0.0, 0.0)),
+            CartesianTimedMeasurement(0.0, Vector3(0.0, 0.0, 0.0)),
+            CartesianTimedMeasurement(1.0, Vector3(1.0, 0.0, 0.0)),
+            CartesianTimedMeasurement(2.0, Vector3(2.0, 0.0, 0.0)),
         )
     }
 

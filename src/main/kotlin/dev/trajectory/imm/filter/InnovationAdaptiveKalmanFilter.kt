@@ -1,11 +1,11 @@
 package dev.trajectory.imm.filter
 
 import dev.trajectory.imm.domain.CovarianceMatrix
+import dev.trajectory.imm.domain.CartesianTimedMeasurement
 import dev.trajectory.imm.domain.MeasurementEstimate
 import dev.trajectory.imm.domain.MeasurementVector
 import dev.trajectory.imm.domain.StateEstimate
 import dev.trajectory.imm.domain.StateVector
-import dev.trajectory.imm.domain.TimedMeasurement
 import dev.trajectory.imm.measurement.LinearMeasurementModel
 import dev.trajectory.imm.motion.MotionModel
 import dev.trajectory.imm.state.CanonicalKinematicState
@@ -48,7 +48,7 @@ class InnovationAdaptiveKalmanFilter(
     override val stateDimension: Int = motionModel.stateDimension
     override val measurementDimension: Int = measurementModel.measurementDimension
 
-    override fun initialize(measurements: List<TimedMeasurement>): FilterState {
+    override fun initialize(measurements: List<CartesianTimedMeasurement>): FilterState {
         return initializeCanonicalKinematicState(name, measurements, initializationConfig)
     }
 
@@ -80,7 +80,7 @@ class InnovationAdaptiveKalmanFilter(
 
     override fun correct(
         prediction: FilterPrediction,
-        measurement: TimedMeasurement,
+        measurement: CartesianTimedMeasurement,
         gatingThreshold: Double,
     ): FilterUpdate {
         require(gatingThreshold.isFinite() && gatingThreshold > 0.0) { "Gating threshold must be finite and positive." }
@@ -88,7 +88,7 @@ class InnovationAdaptiveKalmanFilter(
             "Correction measurement time ${measurement.time} must match prediction time ${prediction.predictedEstimate.time}."
         }
         val h = measurementModel.measurementMatrix()
-        val baseMeasurementNoise = measurementModel.measurementNoise().value
+        val baseMeasurementNoise = measurementModel.measurementNoise(measurement).value
         val predictedMean = prediction.predictedEstimate.mean.value
         val predictedCovariance = prediction.predictedEstimate.covariance.value
         val innovation = measurementVector(measurement) - h * predictedMean
