@@ -198,20 +198,83 @@ Default initial model probabilities are equal:
 CV = 1/3, CA = 1/3, Singer = 1/3
 ```
 
+## Configurable IMM Filter Sets
+
+Coordinate frame selection and IMM filter selection are independent:
+
+- `ImmTrajectorySolver.cartesian(...)` or `ImmTrajectorySolver.wgs84(...)` chooses the public input/output coordinate system.
+- `ImmFilterSetSpec` chooses the IMM motion models and Kalman filter implementations.
+
+Available motion model types:
+
+```kotlin
+MotionModelType.CV
+MotionModelType.CA
+MotionModelType.SINGER
+```
+
+Available Kalman filter types:
+
+```kotlin
+KalmanFilterType.LINEAR
+KalmanFilterType.EXTENDED
+KalmanFilterType.INNOVATION_ADAPTIVE
+KalmanFilterType.FADING_MEMORY
+```
+
+Example mixed IMM filter set:
+
+```kotlin
+val mixedFilterSet = ImmFilterSetSpec(
+    models = listOf(
+        ImmModelSpec("CV", MotionModelType.CV, KalmanFilterType.LINEAR),
+        ImmModelSpec("CA", MotionModelType.CA, KalmanFilterType.INNOVATION_ADAPTIVE),
+        ImmModelSpec("Singer", MotionModelType.SINGER, KalmanFilterType.EXTENDED),
+    ),
+)
+```
+
+The standard `CV`, `CA`, `Singer` names and order can use the default transition matrix even when filter implementations differ. Any non-standard model set must provide an explicit `transitionMatrix`.
+
+Single-model example:
+
+```kotlin
+val cvOnly = ImmFilterSetSpec(
+    models = listOf(
+        ImmModelSpec("OnlyCV", MotionModelType.CV, KalmanFilterType.LINEAR),
+    ),
+    transitionMatrix = Matrix.ofRows(listOf(listOf(1.0))),
+    initialProbabilities = mapOf("OnlyCV" to 1.0),
+)
+```
+
 ## Cartesian Usage Example
 
 ```kotlin
 import dev.trajectory.imm.domain.CartesianPositionCovariance
 import dev.trajectory.imm.domain.CartesianTimedMeasurement
 import dev.trajectory.imm.domain.Vector3
+import dev.trajectory.imm.solver.ImmFilterSetSpec
+import dev.trajectory.imm.solver.ImmModelSpec
 import dev.trajectory.imm.solver.ImmSolverConfig
 import dev.trajectory.imm.solver.ImmTrajectorySolver
+import dev.trajectory.imm.solver.KalmanFilterType
+import dev.trajectory.imm.solver.MotionModelType
 
 fun main() {
+    val filterSet = ImmFilterSetSpec(
+        models = listOf(
+            ImmModelSpec("CV", MotionModelType.CV, KalmanFilterType.LINEAR),
+            ImmModelSpec("CA", MotionModelType.CA, KalmanFilterType.INNOVATION_ADAPTIVE),
+            ImmModelSpec("Singer", MotionModelType.SINGER, KalmanFilterType.EXTENDED),
+        ),
+    )
+
     val solver = ImmTrajectorySolver.cartesian(
         config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(
             variance = 25.0,
         ),
+        filterSet = filterSet,
     )
 
     val history = listOf(
@@ -257,8 +320,12 @@ import dev.trajectory.imm.domain.TrajectoryPrediction
 import dev.trajectory.imm.domain.Wgs84Position
 import dev.trajectory.imm.domain.Wgs84PositionCovariance
 import dev.trajectory.imm.domain.Wgs84TimedMeasurement
+import dev.trajectory.imm.solver.ImmFilterSetSpec
+import dev.trajectory.imm.solver.ImmModelSpec
 import dev.trajectory.imm.solver.ImmSolverConfig
 import dev.trajectory.imm.solver.ImmTrajectorySolver
+import dev.trajectory.imm.solver.KalmanFilterType
+import dev.trajectory.imm.solver.MotionModelType
 
 fun main() {
     val origin = Wgs84Position(
@@ -266,12 +333,20 @@ fun main() {
         longitudeDegrees = 60.6057000,
         heightMeters = 250.0,
     )
+    val filterSet = ImmFilterSetSpec(
+        models = listOf(
+            ImmModelSpec("CV", MotionModelType.CV, KalmanFilterType.LINEAR),
+            ImmModelSpec("CA", MotionModelType.CA, KalmanFilterType.INNOVATION_ADAPTIVE),
+            ImmModelSpec("Singer", MotionModelType.SINGER, KalmanFilterType.EXTENDED),
+        ),
+    )
 
     val solver = ImmTrajectorySolver.wgs84(
         origin = origin,
         config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(
             variance = 25.0,
         ),
+        filterSet = filterSet,
     )
 
     val history = listOf(

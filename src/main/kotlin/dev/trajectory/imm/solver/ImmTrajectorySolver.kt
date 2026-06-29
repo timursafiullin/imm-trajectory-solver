@@ -22,14 +22,8 @@ import dev.trajectory.imm.domain.Wgs84Position
 import dev.trajectory.imm.domain.Wgs84TimedMeasurement
 import dev.trajectory.imm.filter.FilterState
 import dev.trajectory.imm.filter.FilterUpdate
-import dev.trajectory.imm.filter.LinearKalmanFilter
-import dev.trajectory.imm.filter.LinearKalmanInitializationConfig
 import dev.trajectory.imm.filter.TrackingFilter
 import dev.trajectory.imm.math.Matrix
-import dev.trajectory.imm.measurement.CartesianPositionMeasurementModel
-import dev.trajectory.imm.motion.ConstantAccelerationModel9D
-import dev.trajectory.imm.motion.ConstantVelocityModel9D
-import dev.trajectory.imm.motion.SingerAccelerationModel9D
 import dev.trajectory.imm.state.CanonicalKinematicState
 import dev.trajectory.imm.validation.Validators
 import dev.trajectory.imm.validation.logSumExp
@@ -482,17 +476,21 @@ class MetricImmTrajectoryCore(
 }
 
 object ImmTrajectorySolver {
-    fun cartesian(config: ImmSolverConfig = ImmSolverConfig()): CartesianImmTrajectorySolver {
+    fun cartesian(
+        config: ImmSolverConfig = ImmSolverConfig(),
+        filterSet: ImmFilterSetSpec = ImmFilterSetSpec.defaultCvCaSinger(),
+    ): CartesianImmTrajectorySolver {
         val measurementNoise = config.measurementNoise
         require(measurementNoise is EnuPositionNoise) {
             "Cartesian solver requires ENU/Cartesian measurement noise."
         }
         val adapter = CartesianCoordinateFrameAdapter(measurementNoise)
         return CartesianImmTrajectorySolver(
-            core = createCore(
+            core = ImmCoreFactory.createCore(
                 config = config,
                 frame = CartesianSolverFrame,
                 baseMeasurementNoise = measurementNoise.covariance,
+                filterSet = filterSet,
             ),
             adapter = adapter,
         )
@@ -502,6 +500,7 @@ object ImmTrajectorySolver {
         origin: Wgs84Position,
         config: ImmSolverConfig = ImmSolverConfig(),
         frameConfig: Wgs84FrameConfig = Wgs84FrameConfig(origin = origin),
+        filterSet: ImmFilterSetSpec = ImmFilterSetSpec.defaultCvCaSinger(),
     ): Wgs84ImmTrajectorySolver {
         require(frameConfig.origin == origin) {
             "WGS84 frame config origin must match factory origin."
@@ -509,56 +508,13 @@ object ImmTrajectorySolver {
         val frame = Wgs84SolverFrame.fromConfig(frameConfig)
         val adapter = Wgs84CoordinateFrameAdapter(frame, config.measurementNoise)
         return Wgs84ImmTrajectorySolver(
-            core = createCore(
+            core = ImmCoreFactory.createCore(
                 config = config,
                 frame = frame,
                 baseMeasurementNoise = adapter.measurementNoiseAt(origin),
+                filterSet = filterSet,
             ),
             adapter = adapter,
-        )
-    }
-
-    private fun createCore(
-        config: ImmSolverConfig,
-        frame: SolverFrame,
-        baseMeasurementNoise: CovarianceMatrix,
-    ): MetricImmTrajectoryCore {
-        val measurementModel = CartesianPositionMeasurementModel(baseMeasurementNoise)
-        val init = LinearKalmanInitializationConfig()
-        val filters = listOf(
-            LinearKalmanFilter(
-                name = "CV",
-                motionModel = ConstantVelocityModel9D(accelerationSpectralDensity = config.cvAccelerationSpectralDensity),
-                measurementModel = measurementModel,
-                initializationConfig = init,
-            ),
-            LinearKalmanFilter(
-                name = "CA",
-                motionModel = ConstantAccelerationModel9D(config.caJerkSpectralDensity),
-                measurementModel = measurementModel,
-                initializationConfig = init,
-            ),
-            LinearKalmanFilter(
-                name = "Singer",
-                motionModel = SingerAccelerationModel9D(config.singerManeuverTime, config.singerAccelerationNoiseIntensity),
-                measurementModel = measurementModel,
-                initializationConfig = init,
-            ),
-        )
-        val transition = Matrix.ofRows(
-            listOf(
-                listOf(0.95, 0.04, 0.01),
-                listOf(0.03, 0.94, 0.03),
-                listOf(0.02, 0.08, 0.90),
-            ),
-        )
-        val initialProbabilities = mapOf("CV" to 1.0 / 3.0, "CA" to 1.0 / 3.0, "Singer" to 1.0 / 3.0)
-        return MetricImmTrajectoryCore(
-            filters = filters,
-            transitionMatrix = transition,
-            initialProbabilities = initialProbabilities,
-            gatingThreshold = config.gatingThreshold,
-            frame = frame,
         )
     }
 }

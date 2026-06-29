@@ -232,11 +232,137 @@ class ImmTrajectorySolverTest {
         assertTrue(covariance.geodeticCovariance.value.isPositiveSemiDefinite(1.0e-7))
     }
 
+    @Test
+    fun `cartesian solver supports mixed Kalman filter set`() {
+        val solver = ImmTrajectorySolver.cartesian(
+            config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(
+                variance = 1.0,
+                gatingThreshold = 1.0e6,
+            ),
+            filterSet = mixedCvCaSingerFilterSet(),
+        )
+        val state = solver.initialize(cartesianHistory())
+        val prediction = solver.predictNext(state, 3.0)
+        val step = solver.update(state, CartesianTimedMeasurement(3.0, Vector3(3.0, 0.0, 0.0)))
+
+        assertEquals(setOf("CV", "CA", "Singer"), state.modelProbabilities.keys)
+        assertEquals(setOf("CV", "CA", "Singer"), prediction.modelProbabilities.keys)
+        assertEquals(setOf("CV", "CA", "Singer"), step.update.modelProbabilities.keys)
+        assertTrue(step.update.accepted)
+        assertEquals(CanonicalKinematicState.DIMENSION, prediction.internalStateEstimate.mean.value.rows)
+    }
+
+    @Test
+    fun `WGS84 solver supports mixed Kalman filter set`() {
+        val history = wgs84History()
+        val origin = history.first().position
+        val solver = ImmTrajectorySolver.wgs84(
+            origin = origin,
+            config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(
+                variance = 1.0,
+                gatingThreshold = 1.0e6,
+            ),
+            filterSet = mixedCvCaSingerFilterSet(),
+        )
+        val state = solver.initialize(history)
+        val prediction = solver.predictNext(state, 3.0)
+
+        assertEquals(setOf("CV", "CA", "Singer"), state.modelProbabilities.keys)
+        assertEquals(setOf("CV", "CA", "Singer"), prediction.modelProbabilities.keys)
+        assertTrue(prediction.expectedPosition.latitudeDegrees.isFinite())
+        assertTrue(prediction.expectedPosition.longitudeDegrees.isFinite())
+        assertTrue(prediction.expectedPosition.heightMeters.isFinite())
+    }
+
+    @Test
+    fun `non-default filter set requires explicit transition matrix`() {
+        val config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(1.0)
+        val filterSet = ImmFilterSetSpec.of(
+            ImmModelSpec("OnlyCV", MotionModelType.CV, KalmanFilterType.LINEAR),
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            ImmTrajectorySolver.cartesian(
+                config = config,
+                filterSet = filterSet,
+            ).initialize(cartesianHistory())
+        }
+    }
+
+    @Test
+    fun `custom single-model filter set works with explicit transition matrix`() {
+        val solver = ImmTrajectorySolver.cartesian(
+            config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(1.0),
+            filterSet = ImmFilterSetSpec(
+                models = listOf(
+                    ImmModelSpec("OnlyCV", MotionModelType.CV, KalmanFilterType.LINEAR),
+                ),
+                transitionMatrix = Matrix.ofRows(listOf(listOf(1.0))),
+                initialProbabilities = mapOf("OnlyCV" to 1.0),
+            ),
+        )
+        val state = solver.initialize(cartesianHistory())
+
+        assertEquals(setOf("OnlyCV"), state.modelProbabilities.keys)
+        assertEquals(1.0, state.modelProbabilities.getValue("OnlyCV"), 1.0e-12)
+    }
+
+    @Test
+    fun `invalid explicit transition matrix is rejected`() {
+        val filterSet = ImmFilterSetSpec(
+            models = listOf(
+                ImmModelSpec("OnlyCV", MotionModelType.CV, KalmanFilterType.LINEAR),
+            ),
+            transitionMatrix = Matrix.ofRows(listOf(listOf(0.5))),
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            ImmTrajectorySolver.cartesian(
+                config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(1.0),
+                filterSet = filterSet,
+            ).initialize(cartesianHistory())
+        }
+    }
+
+    @Test
+    fun `explicit initial probabilities are normalized by core`() {
+        val solver = ImmTrajectorySolver.cartesian(
+            config = ImmSolverConfig.withIsotropicEnuMeasurementVariance(1.0),
+            filterSet = ImmFilterSetSpec(
+                models = listOf(
+                    ImmModelSpec("CV", MotionModelType.CV, KalmanFilterType.LINEAR),
+                    ImmModelSpec("CA", MotionModelType.CA, KalmanFilterType.LINEAR),
+                    ImmModelSpec("Singer", MotionModelType.SINGER, KalmanFilterType.LINEAR),
+                ),
+                initialProbabilities = mapOf(
+                    "CV" to 2.0,
+                    "CA" to 1.0,
+                    "Singer" to 1.0,
+                ),
+            ),
+        )
+        val state = solver.initialize(cartesianHistory())
+
+        assertEquals(0.5, state.modelProbabilities.getValue("CV"), 1.0e-12)
+        assertEquals(0.25, state.modelProbabilities.getValue("CA"), 1.0e-12)
+        assertEquals(0.25, state.modelProbabilities.getValue("Singer"), 1.0e-12)
+    }
+
     private fun cartesianHistory(): List<CartesianTimedMeasurement> {
         return listOf(
             CartesianTimedMeasurement(0.0, Vector3(0.0, 0.0, 0.0)),
             CartesianTimedMeasurement(1.0, Vector3(1.0, 0.0, 0.0)),
             CartesianTimedMeasurement(2.0, Vector3(2.0, 0.0, 0.0)),
+        )
+    }
+
+    private fun mixedCvCaSingerFilterSet(): ImmFilterSetSpec {
+        return ImmFilterSetSpec(
+            models = listOf(
+                ImmModelSpec("CV", MotionModelType.CV, KalmanFilterType.LINEAR),
+                ImmModelSpec("CA", MotionModelType.CA, KalmanFilterType.INNOVATION_ADAPTIVE),
+                ImmModelSpec("Singer", MotionModelType.SINGER, KalmanFilterType.EXTENDED),
+            ),
         )
     }
 
